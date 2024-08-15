@@ -50,7 +50,104 @@ const insertChat = (sender_chat_id, receiver_chat_id, message_id) => {
 		)
 	})
 }
+const newAnswerScene = new Scenes.BaseScene('newAnswerMessage')
 
+newAnswerScene.enter(async ctx => {
+	// Извлечение chat_id и message_id из базы данных
+	db.get(
+		`SELECT chat_id, message_id FROM scene_state ORDER BY id DESC LIMIT 1`,
+		[],
+		async (err, row) => {
+			if (err) {
+				console.error('Ошибка при запросе к базе данных:', err.message)
+				await ctx.reply('Произошла ошибка при получении состояния сцены.')
+				return ctx.scene.leave()
+			}
+
+			ctx.scene.state.chat_id = row.chat_id
+			ctx.scene.state.message_id = row.message_id
+
+			console.log(
+				`answerScene - chat_id: ${ctx.scene.state.chat_id}, message_id: ${ctx.scene.state.message_id}`
+			)
+			await ctx.reply('Отправь ответ на сообщение:')
+		}
+	)
+})
+
+newAnswerScene.on('message', async ctx => {
+	const { message_id, chat_id } = ctx.scene.state
+	console.log(`answerScene - chat_id: ${chat_id}, message_id: ${message_id}`)
+
+	if (!chat_id || !message_id) {
+		await ctx.reply('Не удалось получить идентификатор чата.')
+		return ctx.scene.leave()
+	}
+
+	// Получение данных чата из БД
+	db.get(
+		`SELECT * FROM chats WHERE message_id = ?`,
+		[message_id],
+		async (err, row) => {
+			if (err) {
+				console.error('Ошибка при запросе к базе данных:', err.message)
+				await ctx.reply('Произошла ошибка при поиске сообщения в базе данных.')
+				return ctx.scene.leave()
+			}
+
+			const receiver_chat_id = row
+				? String(row.sender_chat_id)
+				: String(chat_id)
+			const sender_chat_id = row
+				? String(row.receiver_chat_id)
+				: String(chat_id)
+			const other_account_chat_id = row
+				? String(row.sender_chat_id)
+				: String(chat_id) // Используем sender_chat_id из БД
+			console.log(
+				`receiver_chat_id: ${receiver_chat_id}, sender_chat_id: ${sender_chat_id}, other_account_chat_id: ${other_account_chat_id}`
+			)
+
+			try {
+				const markup = Markup.inlineKeyboard([
+					Markup.button.callback(
+						'Ответить🔄',
+						`answer_${ctx.chat.id}_${message_id}`
+					),
+				])
+				// Сохранение ответа в БД
+				await insertChat(sender_chat_id, sender_chat_id, ctx.message.message_id)
+				await bot.telegram.copyMessage(
+					sender_chat_id,
+					ctx.chat.id,
+					ctx.message.message_id,
+					markup
+				)
+
+				await ctx.reply(
+					row
+						? 'Ваш ответ был отправлен.'
+						: 'Не удалось найти исходное сообщение для ответа.'
+				)
+			} catch (e) {
+				console.error('Ошибка при отправке сообщения:', e.message)
+				await ctx.reply('Не удалось отправить ответ этому пользователю.')
+			} finally {
+				await ctx.scene.leave()
+			}
+			return ctx.scene.leave()
+		}
+	)
+})
+
+// Функция для удаления кнопок
+const removeButtons = async ctx => {
+	try {
+		await ctx.editMessageReplyMarkup({ inline_keyboard: [] })
+	} catch (e) {
+		console.error('Ошибка при удалении кнопок:', e.message)
+	}
+}
 // Сцена для получения сообщения
 const getMessageScene = new Scenes.BaseScene('getMessage')
 
@@ -78,13 +175,16 @@ getMessageScene.on('message', async ctx => {
 
 	try {
 		const markup = Markup.inlineKeyboard([
-			Markup.button.callback('Ответить', `answer_${ctx.chat.id}_${message_id}`),
+			Markup.button.callback(
+				'Ответить🔄',
+				`answer_${ctx.chat.id}_${message_id}`
+			),
 		])
 		await bot.telegram.sendMessage(
 			chat_id,
 			'💬 Вам пришло новое анонимное сообщение:'
 		)
-		await bot.telegram.copyMessage(chat_id, ctx.chat.id, message_id,markup)
+		await bot.telegram.copyMessage(chat_id, ctx.chat.id, message_id, markup)
 		// Сохранение данных чата в БД
 		await insertChat(ctx.chat.id, chat_id, message_id)
 	} catch (e) {
@@ -99,7 +199,6 @@ getMessageScene.on('message', async ctx => {
 			`С помощью этого бота вы можете отправить или получить <b>анонимное сообщение</b>.\n\nВот ваша личная ссылка:\n<code>t.me/${me.username}?start=${ctx.from.id}</code>\nПоделись ею, если хочешь, чтобы тебе отправили <b>анонимное сообщение</b>.`,
 			{ parse_mode: 'HTML' }
 		)
-		await ctx.scene.leave()
 	}
 })
 
@@ -153,12 +252,19 @@ answerScene.on('message', async ctx => {
 			console.log(`receiver_chat_id: ${receiver_chat_id}`) // Отладочное сообщение
 
 			try {
+				const markup = Markup.inlineKeyboard([
+					Markup.button.callback(
+						'Ответить🔄',
+						`backans${ctx.chat.id}_${message_id}`
+					),
+				])
 				// Сохранение ответа в БД
 				await insertChat(ctx.chat.id, receiver_chat_id, ctx.message.message_id)
 				await bot.telegram.copyMessage(
 					receiver_chat_id,
 					ctx.chat.id,
-					ctx.message.message_id
+					ctx.message.message_id,
+					markup
 				)
 
 				await ctx.reply(
@@ -177,7 +283,7 @@ answerScene.on('message', async ctx => {
 })
 
 // Настройка сцен и запуск бота
-const stage = new Scenes.Stage([getMessageScene, answerScene])
+const stage = new Scenes.Stage([getMessageScene, answerScene, newAnswerScene])
 bot.use(session())
 bot.use(stage.middleware())
 
@@ -223,6 +329,48 @@ bot.action(/answer_(.+)_(.+)/, async ctx => {
 	)
 
 	await ctx.scene.enter('answerMessage')
+})
+
+// Обработчик действий для обратной отправки сообщения
+bot.action(/backans(.+)_(.+)/, async ctx => {
+	const [_, chat_id, message_id] = ctx.match
+	console.log(`bot.action - chat_id: ${chat_id}, message_id: ${message_id}`)
+
+	// Извлечение sender_chat_id из базы данных
+	db.get(
+		`SELECT sender_chat_id FROM chats WHERE receiver_chat_id = ? AND message_id = ?`,
+		[chat_id, message_id],
+		(err, row) => {
+			if (err) {
+				console.error(err.message)
+				return
+			}
+
+			if (!row) {
+				console.error('Не удалось найти запись с указанным receiver_chat_id.')
+				return
+			}
+
+			const sender_chat_id = row.sender_chat_id
+
+			// Сохранение sender_chat_id и message_id в базу данных
+			db.run(
+				`INSERT INTO scene_state (chat_id, message_id) VALUES (?, ?)`,
+				[sender_chat_id, message_id],
+				function (err) {
+					if (err) {
+						console.error(err.message)
+					} else {
+						console.log(`Состояние сцены сохранено с ID ${this.lastID}`)
+					}
+				}
+			)
+		}
+	)
+
+	await ctx.scene.enter('newAnswerMessage')
+	await removeButtons(ctx)
+	// Удаление кнопок после нажатия
 })
 
 // Запуск бота
