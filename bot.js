@@ -5,7 +5,22 @@ process.noDeprecation = true
 
 const bot = new Telegraf(process.env.BOT_TOKEN)
 const db = new sqlite3.Database('./chats.db')
+const dbus = require('./database')
 
+function addUser(userId) {
+	dbus.run(
+		'INSERT OR IGNORE INTO users (id) VALUES (?)',
+		[userId],
+		function (err) {
+			if (err) {
+				return console.error(err.message)
+			}
+			console.log(`User with ID ${userId} added to the database`)
+		}
+	)
+}
+
+module.exports = { addUser }
 // Создание таблиц, если они еще не существуют
 db.serialize(() => {
 	db.run(`
@@ -136,7 +151,7 @@ newAnswerScene.on('message', async ctx => {
 				await ctx.scene.leave()
 			}
 			return ctx.scene.leave()
-		}
+		return ctx.scene.leave()}
 	)
 })
 
@@ -202,7 +217,7 @@ getMessageScene.on('message', async ctx => {
 			{ source: '123.mp4' },
 			{ caption: messageText, parse_mode: 'HTML' }
 		)
-	}
+	return ctx.scene.leave()}
 })
 
 // Сцена для ответа на сообщение
@@ -281,7 +296,7 @@ answerScene.on('message', async ctx => {
 			} finally {
 				await ctx.scene.leave()
 			}
-		}
+	ctx.scene.leave()	} 
 	)
 })
 
@@ -290,10 +305,15 @@ const stage = new Scenes.Stage([getMessageScene, answerScene, newAnswerScene])
 bot.use(session())
 bot.use(stage.middleware())
 
+
+
 bot.start(async ctx => {
 	const chat_id = ctx.message.text.split(' ')[1]?.trim()
 	console.log(`chat_id: ${chat_id}`)
 	const me = await bot.telegram.getMe()
+
+	// Добавление пользователя в базу данных
+	addUser(ctx.from.id)
 
 	// Проверка, если пользователь переходит по своей же ссылке
 	if (chat_id && chat_id == ctx.from.id) {
@@ -389,6 +409,54 @@ bot.action(/backans(.+)_(.+)/, async ctx => {
 	await removeButtons(ctx)
 	// Удаление кнопок после нажатия
 })
+
+
+const admins = process.env.admin_ids.split(',').map(id => parseInt(id.trim()))
+
+// Функция для рассылки сообщений
+
+
+// Команда admin
+function broadcastMessage(bot, message) {
+	db.all('SELECT id FROM users', [], (err, rows) => {
+		if (err) {
+			throw err
+		}
+		rows.forEach(row => {
+			bot.telegram.sendMessage(row.id, message).catch(err => {
+				console.error(
+					`Не удалось отправить сообщение пользователю ${row.id}:`,
+					err
+				)
+			})
+		})
+	})
+}
+
+bot.command('admin', ctx => {
+	if (admins.includes(ctx.from.id)) {
+		ctx.reply(
+			'Выберите действие:',
+			Markup.inlineKeyboard([Markup.button.callback('Рассылка', 'broadcast')])
+		)
+	}
+})
+
+// Обработчик для кнопки "Рассылка"
+bot.action('broadcast', ctx => {
+	if (admins.includes(ctx.from.id)) {
+		ctx.reply('Введите сообщение для рассылки:')
+		bot.on('text', ctx => {
+			const message = ctx.message.text
+			broadcastMessage(bot, message)
+			ctx.reply('Сообщение отправлено всем пользователям.')
+		})
+	} else {
+		ctx.reply('У вас нет прав администратора.')
+	}
+})
+
+// Обработчик для кнопки "Рассылка"
 
 // Запуск бота
 bot.launch()
