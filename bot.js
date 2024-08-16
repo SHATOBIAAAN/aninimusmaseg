@@ -151,18 +151,12 @@ newAnswerScene.on('message', async ctx => {
 				await ctx.scene.leave()
 			}
 			return ctx.scene.leave()
-		return ctx.scene.leave()}
+		}
 	)
 })
 
 // Функция для удаления кнопок
-const removeButtons = async ctx => {
-	try {
-		await ctx.editMessageReplyMarkup({ inline_keyboard: [] })
-	} catch (e) {
-		console.error('Ошибка при удалении кнопок:', e.message)
-	}
-}
+
 // Сцена для получения сообщения
 const getMessageScene = new Scenes.BaseScene('getMessage')
 
@@ -172,21 +166,35 @@ getMessageScene.enter(async ctx => {
 		await ctx.reply('Не удалось получить идентификатор чата.')
 		return ctx.scene.leave()
 	}
+
 	ctx.scene.state.chat_id = chat_id
 	await ctx.reply(
-		'Отправь сообщение, и его <b>анонимно</b> получит тот пользователь, который поделился с тобой этой ссылкой:',
-		{ parse_mode: 'HTML' }
+		`😙 Отправь анонимное сообщение для пользователя <b><i>${chat_id}</i></b>\n\n` +
+			'Напиши сюда всё, что угодно в одном сообщении и пользователь сразу его получит, но не будет знать от кого оно.\n' +
+			'📝 Ты можешь отправить фото, видео, голосовое сообщение или текст',
+		{
+			parse_mode: 'HTML',
+			reply_markup: {
+				inline_keyboard: [[{ text: 'Отменить❌', callback_data: `Cancel` }]],
+			},
+		}
 	)
 })
+getMessageScene.on('text', async ctx => {
+	const text = ctx.message.text
 
-getMessageScene.on('message', async ctx => {
+	// Проверка на команды
+	if (text.startsWith('/')) {
+		if (text === '/start') {
+			await ctx.scene.leave()
+			await ctx.reply('Добро пожаловать! Это команда /start.')
+			return
+		}
+		return await ctx.scene.leave()
+	}
+
 	const chat_id = ctx.scene.state.chat_id
 	const message_id = ctx.message.message_id
-
-	if (!chat_id) {
-		await ctx.reply('Не удалось получить идентификатор чата.')
-		return ctx.scene.leave()
-	}
 
 	try {
 		const markup = Markup.inlineKeyboard([
@@ -203,22 +211,33 @@ getMessageScene.on('message', async ctx => {
 		// Сохранение данных чата в БД
 		await insertChat(ctx.chat.id, chat_id, message_id)
 	} catch (e) {
-		console.error(e)
-		await ctx.reply('Не удалось отправить сообщение этому пользователю.')
+		if (e.response && e.response.error_code === 403) {
+			console.error('Бот был заблокирован пользователем:', chat_id)
+			await ctx.reply(
+				'Не удалось отправить сообщение этому пользователю, так как он заблокировал бота.'
+			)
+		} else {
+			console.error(e)
+			await ctx.reply('Произошла ошибка при отправке сообщения.')
+		}
 	} finally {
-		await ctx.reply('Твое <b>анонимное сообщение</b> было доставлено.', {
+		await ctx.reply('💬 Ваше анонимное сообщение успешно отправлено!\n\n', {
 			parse_mode: 'HTML',
 		})
-		const me = await bot.telegram.getMe()
-		const messageText = `Чтобы получить много анонимных сообщений мы рекомендуем тебе разместить твою персональную ссылку в инстаграме.\n\n📌 Вот твоя персональная ссылка: <code>https://t.me/${me.username}?start=${ctx.from.id}</code>\nНажми на ссылку и она скопируется 👆`
-
-		await bot.telegram.sendAnimation(
-			ctx.chat.id,
-			{ source: '123.mp4' },
-			{ caption: messageText, parse_mode: 'HTML' }
-		)
-	return ctx.scene.leave()}
+		setTimeout(async () => {
+			// Выполнение выхода из текущей сцены и вход в новую сцену через заданное время
+			await ctx.scene.enter('shareLinkScene')
+			return ctx.scene.leave()
+		}, 5500) // Задержка в 6000000 миллисекунд (100 минут)
+	}
 })
+const removeButtons = async ctx => {
+	try {
+		await ctx.editMessageReplyMarkup({ inline_keyboard: [] })
+	} catch (e) {
+		console.error('Ошибка при удалении кнопок:', e.message)
+	}
+}
 
 // Сцена для ответа на сообщение
 const answerScene = new Scenes.BaseScene('answerMessage')
@@ -276,13 +295,34 @@ answerScene.on('message', async ctx => {
 						`backans${ctx.chat.id}_${message_id}`
 					),
 				])
+
 				// Сохранение ответа в БД
 				await insertChat(ctx.chat.id, receiver_chat_id, ctx.message.message_id)
+
+				// Отправка уведомления о новом ответе
+				await bot.telegram.sendMessage(
+					receiver_chat_id,
+					`Вам пришел ответ от пользователя <b><i>${ctx.chat.id}</i></b>`,
+					{ parse_mode: 'HTML' }
+				)
+
+				// Отправка самого ответа
 				await bot.telegram.copyMessage(
 					receiver_chat_id,
 					ctx.chat.id,
 					ctx.message.message_id,
-					markup
+					{
+						reply_markup: {
+							inline_keyboard: [
+								[
+									{
+										text: 'Ответить🔄',
+										callback_data: `backans${ctx.chat.id}_${message_id}`,
+									},
+								],
+							],
+						},
+					}
 				)
 
 				await ctx.reply(
@@ -296,28 +336,47 @@ answerScene.on('message', async ctx => {
 			} finally {
 				await ctx.scene.leave()
 			}
-	ctx.scene.leave()	} 
+		}
 	)
+})
+const shareLinkScene = new Scenes.BaseScene('shareLinkScene')
+
+shareLinkScene.enter(async ctx => {
+	try {
+		const me = await ctx.telegram.getMe()
+		const messageText = `Чтобы получить много анонимных сообщений мы рекомендуем тебе разместить твою персональную ссылку в инстаграме.\n\n📌 Вот твоя персональная ссылка: <code>https://t.me/${me.username}?start=${ctx.from.id}</code>\n\nНажми на ссылку и она скопируется 👆`
+
+		// Отправка видео как GIF вместе с текстом
+		await ctx.telegram.sendAnimation(
+			ctx.chat.id,
+			{ source: '123.mp4' },
+			{ caption: messageText, parse_mode: 'HTML' }
+		)
+	} catch (error) {
+		console.error('Ошибка при отправке сообщения:', error.message)
+		await ctx.reply('Произошла ошибка при отправке сообщения.')
+	} finally {
+		ctx.scene.leave()
+	}
 })
 
 // Настройка сцен и запуск бота
-const stage = new Scenes.Stage([getMessageScene, answerScene, newAnswerScene])
+const stage = new Scenes.Stage([
+	getMessageScene,
+	answerScene,
+	newAnswerScene,
+	shareLinkScene,
+])
 bot.use(session())
 bot.use(stage.middleware())
 
-
-
 bot.start(async ctx => {
+	// Сброс всех сцен
+	await ctx.scene.leave()
+
 	const chat_id = ctx.message.text.split(' ')[1]?.trim()
 	console.log(`chat_id: ${chat_id}`)
-	const me = await bot.telegram.getMe()
 
-<<<<<<< Updated upstream
-	// Добавление пользователя в базу данных
-	addUser(ctx.from.id)
-
-=======
->>>>>>> Stashed changes
 	// Проверка, если пользователь переходит по своей же ссылке
 	if (chat_id && chat_id == ctx.from.id) {
 		const selfMessage = `🤦‍♀️ Писать самому себе - глупо.\n\nЛучше размести ссылку в сториз или у себя в профиле Instagram/Telegram/VK/TikTok, и сообщения не заставят себя долго ждать 😉`
@@ -326,15 +385,7 @@ bot.start(async ctx => {
 	}
 
 	if (!chat_id) {
-		const messageText = `Чтобы получить много анонимных сообщений мы рекомендуем тебе разместить твою персональную ссылку в инстаграме.\n\n📌 Вот твоя персональная ссылка: <code>https://t.me/${me.username}?start=${ctx.from.id}</code>\n\nНажми на ссылку и она скопируется 👆`
-
-		// Отправка видео как GIF вместе с текстом
-		await bot.telegram.sendAnimation(
-			ctx.chat.id,
-			{ source: '123.mp4' },
-			{ caption: messageText, parse_mode: 'HTML' }
-		)
-
+		ctx.scene.enter('shareLinkScene')
 		return
 	}
 
@@ -367,7 +418,7 @@ bot.action(/answer_(.+)_(.+)/, async ctx => {
 			}
 		}
 	)
-
+	removeButtons(ctx)
 	await ctx.scene.enter('answerMessage')
 })
 
@@ -407,17 +458,15 @@ bot.action(/backans(.+)_(.+)/, async ctx => {
 			)
 		}
 	)
-
+	removeButtons(ctx)
 	await ctx.scene.enter('newAnswerMessage')
-	await removeButtons(ctx)
+
 	// Удаление кнопок после нажатия
 })
-
 
 const admins = process.env.admin_ids.split(',').map(id => parseInt(id.trim()))
 
 // Функция для рассылки сообщений
-
 
 // Команда admin
 function broadcastMessage(bot, message) {
@@ -445,6 +494,12 @@ bot.command('admin', ctx => {
 	}
 })
 
+bot.action('Cancel', async ctx => {
+	await ctx.deleteMessage()
+	ctx.scene.enter('shareLinkScene')
+
+	return ctx.scene.leave()
+})
 // Обработчик для кнопки "Рассылка"
 bot.action('broadcast', ctx => {
 	if (admins.includes(ctx.from.id)) {
