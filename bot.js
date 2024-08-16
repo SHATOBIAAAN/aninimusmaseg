@@ -204,9 +204,10 @@ getMessageScene.on('text', async ctx => {
 			),
 		])
 		await bot.telegram.sendMessage(
-			chat_id,
-			'💬 Вам пришло новое анонимное сообщение:'
-		)
+					chat_id,
+					`Вам пришел ответ от пользователя <b><i>${ctx.chat.id}</i></b>`,
+					{ parse_mode: 'HTML' }
+				)
 		await bot.telegram.copyMessage(chat_id, ctx.chat.id, message_id, markup)
 		// Сохранение данных чата в БД
 		await insertChat(ctx.chat.id, chat_id, message_id)
@@ -224,11 +225,8 @@ getMessageScene.on('text', async ctx => {
 		await ctx.reply('💬 Ваше анонимное сообщение успешно отправлено!\n\n', {
 			parse_mode: 'HTML',
 		})
-		setTimeout(async () => {
-			// Выполнение выхода из текущей сцены и вход в новую сцену через заданное время
-			await ctx.scene.enter('shareLinkScene')
-			return ctx.scene.leave()
-		}, 5500) // Задержка в 6000000 миллисекунд (100 минут)
+        return await ctx.scene.enter('shareLinkScene1')
+		 // Задержка в 6000000 миллисекунд (100 минут)
 	}
 })
 const removeButtons = async ctx => {
@@ -289,13 +287,6 @@ answerScene.on('message', async ctx => {
 			console.log(`receiver_chat_id: ${receiver_chat_id}`) // Отладочное сообщение
 
 			try {
-				const markup = Markup.inlineKeyboard([
-					Markup.button.callback(
-						'Ответить🔄',
-						`backans${ctx.chat.id}_${message_id}`
-					),
-				])
-
 				// Сохранение ответа в БД
 				await insertChat(ctx.chat.id, receiver_chat_id, ctx.message.message_id)
 
@@ -339,10 +330,11 @@ answerScene.on('message', async ctx => {
 		}
 	)
 })
+const shareLinkScene1 = new Scenes.BaseScene('shareLinkScene1')
 const shareLinkScene = new Scenes.BaseScene('shareLinkScene')
 
 shareLinkScene.enter(async ctx => {
-	try {
+	
 		const me = await ctx.telegram.getMe()
 		const messageText = `Чтобы получить много анонимных сообщений мы рекомендуем тебе разместить твою персональную ссылку в инстаграме.\n\n📌 Вот твоя персональная ссылка: <code>https://t.me/${me.username}?start=${ctx.from.id}</code>\n\nНажми на ссылку и она скопируется 👆`
 
@@ -352,13 +344,15 @@ shareLinkScene.enter(async ctx => {
 			{ source: '123.mp4' },
 			{ caption: messageText, parse_mode: 'HTML' }
 		)
-	} catch (error) {
-		console.error('Ошибка при отправке сообщения:', error.message)
-		await ctx.reply('Произошла ошибка при отправке сообщения.')
-	} finally {
-		ctx.scene.leave()
-	}
+	
 })
+shareLinkScene1.enter(async ctx => {
+setTimeout(async () => {
+    await ctx.scene.enter('shareLinkScene');
+    return ctx.scene.leave();
+}, 5500)
+})
+
 
 // Настройка сцен и запуск бота
 const stage = new Scenes.Stage([
@@ -366,6 +360,7 @@ const stage = new Scenes.Stage([
 	answerScene,
 	newAnswerScene,
 	shareLinkScene,
+	shareLinkScene1,
 ])
 bot.use(session())
 bot.use(stage.middleware())
